@@ -1,3 +1,4 @@
+use std::error::Error;
 use std::{env, time::Duration};
 
 use async_trait::async_trait;
@@ -133,6 +134,13 @@ impl PostgresIntegrationTestSuite {
 
         Ok(())
     }
+
+    async fn test_prepare(&self) -> RunResult {
+        let stmt = self.client.prepare("SELECT 1").await.unwrap();
+        self.client.query(&stmt, &[&"test"]).await.unwrap();
+
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -143,6 +151,7 @@ impl AsyncTestSuite for PostgresIntegrationTestSuite {
 
     async fn run(&mut self) -> RunResult {
         // self.test_use().await?;
+        self.test_prepare().await?;
         // self.test_execute_query("SELECT COUNT(*), status FROM Orders".to_string())
         //     .await?;
         // self.test_execute_query(

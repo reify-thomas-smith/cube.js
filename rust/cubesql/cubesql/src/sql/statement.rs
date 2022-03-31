@@ -1,6 +1,11 @@
 use msql_srv::{Column, ColumnFlags, ColumnType};
 use sqlparser::ast;
 
+use super::{
+    postgres::protocol::{RowDescription, RowDescriptionField},
+    PgType, PgTypeId,
+};
+
 #[derive(Debug)]
 pub enum BindValue {
     String(String),
@@ -113,40 +118,58 @@ trait Visitor<'ast> {
 }
 
 #[derive(Debug)]
-pub struct StatementPrepare {
-    parameters: Vec<Column>,
-}
+pub struct FoundParameter {}
 
-impl StatementPrepare {
-    pub fn new() -> Self {
-        Self { parameters: vec![] }
-    }
-
-    pub fn prepare(&mut self, stmt: &mut ast::Statement) -> &Vec<Column> {
-        self.visit_statement(stmt);
-
-        &self.parameters
-    }
-}
-
-impl<'ast> Visitor<'ast> for StatementPrepare {
-    fn visit_value(&mut self, _: &mut ast::Value) {
-        self.parameters.push(Column {
+impl Into<Column> for FoundParameter {
+    fn into(self) -> Column {
+        Column {
             table: String::new(),
             column: "not implemented".to_owned(),
             coltype: ColumnType::MYSQL_TYPE_VAR_STRING,
             colflags: ColumnFlags::empty(),
-        })
+        }
+    }
+}
+
+impl Into<RowDescriptionField> for FoundParameter {
+    fn into(self) -> RowDescriptionField {
+        RowDescriptionField::new(
+            "unknown".to_string(),
+            PgType::get_by_tid(PgTypeId::UNSPECIFIED),
+        )
     }
 }
 
 #[derive(Debug)]
-pub struct StatementBinder {
+pub struct StatementParamsFinder {
+    parameters: Vec<FoundParameter>,
+}
+
+impl StatementParamsFinder {
+    pub fn new() -> Self {
+        Self { parameters: vec![] }
+    }
+
+    pub fn prepare(mut self, stmt: &mut ast::Statement) -> Vec<FoundParameter> {
+        self.visit_statement(stmt);
+
+        self.parameters
+    }
+}
+
+impl<'ast> Visitor<'ast> for StatementParamsFinder {
+    fn visit_value(&mut self, _: &mut ast::Value) {
+        self.parameters.push(FoundParameter {})
+    }
+}
+
+#[derive(Debug)]
+pub struct StatementParamsBinder {
     position: usize,
     values: Vec<BindValue>,
 }
 
-impl StatementBinder {
+impl StatementParamsBinder {
     pub fn new(values: Vec<BindValue>) -> Self {
         Self {
             position: 0,
@@ -154,12 +177,12 @@ impl StatementBinder {
         }
     }
 
-    pub fn bind(&mut self, stmt: &mut ast::Statement) {
+    pub fn bind(mut self, stmt: &mut ast::Statement) {
         self.visit_statement(stmt);
     }
 }
 
-impl<'ast> Visitor<'ast> for StatementBinder {
+impl<'ast> Visitor<'ast> for StatementParamsBinder {
     fn visit_value(&mut self, value: &mut ast::Value) {
         match &value {
             ast::Value::Placeholder(_) => {
@@ -204,7 +227,7 @@ mod tests {
     fn test_binder(input: &str, output: &str, values: Vec<BindValue>) -> Result<(), CubeError> {
         let stmts = Parser::parse_sql(&PostgreSqlDialect {}, &input).unwrap();
 
-        let mut binder = StatementBinder::new(values);
+        let mut binder = StatementParamsBinder::new(values);
         let mut input = stmts[0].clone();
         binder.bind(&mut input);
 

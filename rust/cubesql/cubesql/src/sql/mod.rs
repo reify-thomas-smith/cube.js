@@ -12,7 +12,7 @@ pub(crate) mod types;
 
 pub use auth_service::{AuthContext, AuthenticateResponse, SqlAuthDefaultImpl, SqlAuthService};
 pub use mysql::MySqlServer;
-pub use postgres::PostgresServer;
+pub use postgres::{pg_type::*, PostgresServer};
 pub use server_manager::ServerManager;
 pub use service::*;
 pub use session::{Session, SessionProcessList, SessionProperties, SessionState};

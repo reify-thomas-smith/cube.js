@@ -9,10 +9,14 @@ use log::{debug, error, trace};
 use tokio::{io::AsyncWriteExt, net::TcpStream};
 
 use crate::{
-    compile::convert_sql_to_cube_query,
+    compile::{
+        convert_sql_to_cube_query, convert_statement_to_cube_query, parser::parse_sql_to_statement,
+        QueryPlan,
+    },
     sql::{
         dataframe::{batch_to_dataframe, TableValue},
-        AuthContext, QueryResponse, Session,
+        session::DatabaseProtocol,
+        AuthContext, PgType, PgTypeId, QueryResponse, Session,
     },
     CubeError,
 };
@@ -20,12 +24,26 @@ use crate::{
 use super::{
     buffer,
     protocol::{self, FrontendMessage, SSL_REQUEST_PROTOCOL},
+    statement::PreparedStatement,
 };
+
+pub struct Portal {
+    plan: QueryPlan,
+}
+
+impl Portal {
+    async fn fetch(&mut self) -> Result<(), Error> {
+        Ok(())
+    }
+}
 
 pub struct AsyncPostgresShim {
     socket: TcpStream,
     #[allow(unused)]
     parameters: HashMap<String, String>,
+    statements: HashMap<String, PreparedStatement>,
+    portals: HashMap<String, Portal>,
+    // Shared
     session: Arc<Session>,
 }
 
@@ -41,6 +59,8 @@ impl AsyncPostgresShim {
         let mut shim = Self {
             socket,
             parameters: HashMap::new(),
+            portals: HashMap::new(),
+            statements: HashMap::new(),
             session,
         };
         match shim.run().await {
@@ -82,7 +102,12 @@ impl AsyncPostgresShim {
 
         loop {
             match buffer::read_message(&mut self.socket).await? {
-                FrontendMessage::Query(query) => self.process_query(query).await?,
+                FrontendMessage::Query(body) => self.process_query(body).await?,
+                FrontendMessage::Parse(body) => self.parse(body).await?,
+                FrontendMessage::Bind(body) => self.bind(body).await?,
+                FrontendMessage::Execute(body) => self.execute(body).await?,
+                FrontendMessage::Describe(body) => self.describe(body).await?,
+                FrontendMessage::Sync => self.sync().await?,
                 FrontendMessage::Terminate => return Ok(()),
                 command_id => {
                     return Err(Error::new(
@@ -102,7 +127,7 @@ impl AsyncPostgresShim {
     }
 
     pub async fn process_startup_message(&mut self) -> Result<StartupState, Error> {
-        let mut buffer = buffer::read_contents(&mut self.socket).await?;
+        let mut buffer = buffer::read_contents(&mut self.socket, 0).await?;
 
         let startup_message = protocol::StartupMessage::from(&mut buffer).await?;
 
@@ -216,6 +241,77 @@ impl AsyncPostgresShim {
         Ok(())
     }
 
+    pub async fn sync(&mut self) -> Result<(), Error> {
+        self.write(protocol::ReadyForQuery::new(
+            protocol::TransactionStatus::Idle,
+        ))
+        .await?;
+
+        Ok(())
+    }
+
+    pub async fn describe(&mut self, describe: protocol::Describe) -> Result<(), Error> {
+        Ok(())
+    }
+
+    pub async fn execute(&mut self, execute: protocol::Execute) -> Result<(), Error> {
+        let portal = self.portals.get_mut(&execute.portal);
+        match portal {
+            Some(portal) => {
+                portal.fetch();
+
+                panic!("Unable to execute portal");
+            }
+            None => {
+                self.write(protocol::ReadyForQuery::new(
+                    protocol::TransactionStatus::Idle,
+                ))
+                .await?;
+            }
+        }
+
+        Ok(())
+    }
+
+    pub async fn bind(&mut self, bind: protocol::Bind) -> Result<(), Error> {
+        let mut source_statement = self
+            .statements
+            .get(&bind.statement)
+            .ok_or_else(|| Error::new(ErrorKind::Other, "Unknown statement"))?;
+
+        let prepated_statement = source_statement.bind(vec![]);
+
+        let meta = self
+            .session
+            .server
+            .transport
+            .meta(self.auth_context().unwrap())
+            .await
+            .unwrap();
+
+        let plan = convert_statement_to_cube_query(&prepated_statement, meta, self.session.clone())
+            .unwrap();
+
+        let portal = Portal { plan };
+
+        self.portals.insert(bind.portal, portal);
+
+        self.write(protocol::BindComplete::new()).await?;
+
+        Ok(())
+    }
+
+    pub async fn parse(&mut self, parse: protocol::Parse) -> Result<(), Error> {
+        let query = parse_sql_to_statement(&parse.query, DatabaseProtocol::PostgreSQL).unwrap();
+
+        self.statements
+            .insert(parse.name, PreparedStatement { query });
+
+        self.write(protocol::ParseComplete::new()).await?;
+
+        Ok(())
+    }
+
     pub async fn process_query(&mut self, query: protocol::Query) -> Result<(), Error> {
         let query = query.query;
         debug!("Query: {}", query);
@@ -240,7 +336,10 @@ impl AsyncPostgresShim {
             Ok(QueryResponse::ResultSet(_, frame)) => {
                 let mut fields = Vec::new();
                 for column in frame.get_columns().iter() {
-                    fields.push(protocol::RowDescriptionField::new(column.get_name()))
+                    fields.push(protocol::RowDescriptionField::new(
+                        column.get_name(),
+                        PgType::get_by_tid(PgTypeId::TEXT),
+                    ))
                 }
 
                 self.write(protocol::RowDescription::new(fields)).await?;
@@ -271,10 +370,12 @@ impl AsyncPostgresShim {
                 .await?;
             }
         }
+
         self.write(protocol::ReadyForQuery::new(
             protocol::TransactionStatus::Idle,
         ))
         .await?;
+
         Ok(())
     }
 
