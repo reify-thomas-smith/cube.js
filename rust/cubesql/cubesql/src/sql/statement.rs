@@ -131,12 +131,6 @@ impl Into<Column> for FoundParameter {
     }
 }
 
-impl Into<ParameterDescription> for Vec<FoundParameter> {
-    fn into(self) -> ParameterDescription {
-        ParameterDescription {}
-    }
-}
-
 #[derive(Debug)]
 pub struct StatementParamsFinder {
     parameters: Vec<FoundParameter>,

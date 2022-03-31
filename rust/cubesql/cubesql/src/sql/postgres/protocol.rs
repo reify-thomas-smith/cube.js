@@ -6,10 +6,12 @@ use std::{
 };
 
 use async_trait::async_trait;
+use byteorder::WriteBytesExt;
+use bytes::BufMut;
 use datafusion::arrow::alloc::NativeType;
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-use super::{buffer, PgType};
+use super::{buffer, PgType, PgTypeId};
 
 const DEFAULT_CAPACITY: usize = 64;
 
@@ -214,12 +216,16 @@ impl Serialize for CommandComplete {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct ParameterDescription {
+    parameters: Vec<PgTypeId>,
 }
 
 impl ParameterDescription {
-    pub fn new() -> Self {
-        Self { }
+    pub fn new(parameters: Vec<PgTypeId>) -> Self {
+        Self {
+            parameters
+        }
     }
 }
 
@@ -228,13 +234,19 @@ impl Serialize for ParameterDescription {
 
     fn serialize(&self) -> Option<Vec<u8>> {
         let mut buffer: Vec<u8> = vec![];
-        // The number of parameters used by the statement (can be zero).
-        buffer.extend_from_slice(&0_i16.to_le_bytes());
+        // FIXME!
+        let size = i16::try_from(self.parameters.len()).unwrap();
+        buffer.put_i16(size);
+
+        for parameter in self.parameters.iter() {
+            buffer.put_i32(0);
+        }
 
         Some(buffer)
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct RowDescription {
     fields: Vec<RowDescriptionField>,
 }
@@ -854,7 +866,7 @@ mod tests {
     async fn test_frontend_message_write_complete_parse() -> Result<(), CubeError> {
         let mut cursor = Cursor::new(vec![]);
 
-        buffer::write_message(&mut cursor, ParseComplete {}).await?;
+        buffer::write_message(&mut cursor, &ParseComplete {}).await?;
 
         assert_eq!(cursor.get_ref()[0..], vec![49, 0, 0, 0, 4]);
 
@@ -869,7 +881,7 @@ mod tests {
             RowDescriptionField::new("str".to_string(), PgType::get_by_tid(PgTypeId::INT8)),
             RowDescriptionField::new("bool".to_string(), PgType::get_by_tid(PgTypeId::INT8)),
         ]);
-        buffer::write_message(&mut cursor, desc).await?;
+        buffer::write_message(&mut cursor, &desc).await?;
 
         assert_eq!(
             cursor.get_ref()[0..],

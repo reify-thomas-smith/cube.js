@@ -128,7 +128,7 @@ pub async fn read_format<Reader: AsyncReadExt + Unpin>(
 
 pub async fn write_message<Writer: AsyncWriteExt + Unpin, Message: Serialize>(
     writer: &mut Writer,
-    message: Message,
+    message: &Message,
 ) -> Result<(), Error> {
     let mut packet_buffer = Vec::with_capacity(64);
     packet_buffer.push(message.code());

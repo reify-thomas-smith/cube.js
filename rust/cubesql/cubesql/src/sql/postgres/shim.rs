@@ -121,7 +121,7 @@ impl AsyncPostgresShim {
 
     pub async fn write<Message: protocol::Serialize>(
         &mut self,
-        message: Message,
+        message: &Message,
     ) -> Result<(), Error> {
         buffer::write_message(&mut self.socket, message).await
     }
@@ -132,7 +132,7 @@ impl AsyncPostgresShim {
         let startup_message = protocol::StartupMessage::from(&mut buffer).await?;
 
         if startup_message.protocol_version.major == SSL_REQUEST_PROTOCOL {
-            self.write(protocol::SSLResponse::new()).await?;
+            self.write(&protocol::SSLResponse::new()).await?;
             return Ok(StartupState::SslRequested);
         }
 
@@ -147,7 +147,7 @@ impl AsyncPostgresShim {
                     startup_message.protocol_version.major, startup_message.protocol_version.minor,
                 ),
             );
-            buffer::write_message(&mut self.socket, error_response).await?;
+            buffer::write_message(&mut self.socket, &error_response).await?;
             return Ok(StartupState::Denied);
         }
 
@@ -158,7 +158,7 @@ impl AsyncPostgresShim {
                 protocol::ErrorCode::InvalidAuthorizationSpecification,
                 "no PostgreSQL user name specified in startup packet".to_string(),
             );
-            buffer::write_message(&mut self.socket, error_response).await?;
+            buffer::write_message(&mut self.socket, &error_response).await?;
             return Ok(StartupState::Denied);
         }
         if !self.parameters.contains_key("database") {
@@ -168,7 +168,7 @@ impl AsyncPostgresShim {
             );
         }
 
-        self.write(protocol::Authentication::new(
+        self.write(&protocol::Authentication::new(
             protocol::AuthenticationRequest::CleartextPassword,
         ))
         .await?;
@@ -205,14 +205,14 @@ impl AsyncPostgresShim {
                 protocol::ErrorCode::InvalidPassword,
                 format!("password authentication failed for user \"{}\"", &user),
             );
-            buffer::write_message(&mut self.socket, error_response).await?;
+            buffer::write_message(&mut self.socket, &error_response).await?;
             return Ok(false);
         }
 
         self.session.state.set_user(Some(user));
         self.session.state.set_auth_context(auth_context);
 
-        self.write(protocol::Authentication::new(
+        self.write(&protocol::Authentication::new(
             protocol::AuthenticationRequest::Ok,
         ))
         .await?;
@@ -229,11 +229,11 @@ impl AsyncPostgresShim {
         ];
 
         for (key, value) in params {
-            self.write(protocol::ParameterStatus::new(key, value))
+            self.write(&protocol::ParameterStatus::new(key, value))
                 .await?;
         }
 
-        self.write(protocol::ReadyForQuery::new(
+        self.write(&protocol::ReadyForQuery::new(
             protocol::TransactionStatus::Idle,
         ))
         .await?;
@@ -242,7 +242,7 @@ impl AsyncPostgresShim {
     }
 
     pub async fn sync(&mut self) -> Result<(), Error> {
-        self.write(protocol::ReadyForQuery::new(
+        self.write(&protocol::ReadyForQuery::new(
             protocol::TransactionStatus::Idle,
         ))
         .await?;
@@ -251,15 +251,15 @@ impl AsyncPostgresShim {
     }
 
     pub async fn describe(&mut self, describe: protocol::Describe) -> Result<(), Error> {
-        let parameters = match describe.typ {
+        let (parameters, description) = match describe.typ {
             protocol::DescribeType::Statement => {
                 let stmt = self.statements
                     .get(&describe.name);
 
                 if let Some(s) = stmt {
-                    s.parameters
+                    (s.parameters.clone(), s.description.clone())
                 } else {
-                    self.write(protocol::ErrorResponse::new(
+                    self.write(&protocol::ErrorResponse::new(
                         protocol::ErrorSeverity::Error,
                         protocol::ErrorCode::InternalError,
                         "missing statement".to_string(),
@@ -274,12 +274,8 @@ impl AsyncPostgresShim {
             },
         };
 
-        self.write(protocol::ParameterDescription::new()).await?;
-        self.write(
-            protocol::RowDescription::new(
-                parameters,
-            )
-        ).await?;
+        self.write(&parameters).await?;
+        self.write(&description).await?;
 
         Ok(())
     }
@@ -293,7 +289,7 @@ impl AsyncPostgresShim {
                 panic!("Unable to execute portal");
             }
             None => {
-                self.write(protocol::ReadyForQuery::new(
+                self.write(&protocol::ReadyForQuery::new(
                     protocol::TransactionStatus::Idle,
                 ))
                 .await?;
@@ -326,25 +322,29 @@ impl AsyncPostgresShim {
 
         self.portals.insert(bind.portal, portal);
 
-        self.write(protocol::BindComplete::new()).await?;
+        self.write(&protocol::BindComplete::new()).await?;
 
         Ok(())
     }
 
     pub async fn parse(&mut self, parse: protocol::Parse) -> Result<(), Error> {
-        let mut     query = parse_sql_to_statement(&parse.query, DatabaseProtocol::PostgreSQL).unwrap();
+        let mut query = parse_sql_to_statement(&parse.query, DatabaseProtocol::PostgreSQL).unwrap();
 
         let stmt_params_finder = StatementParamsFinder::new();
-        let parameters: Vec<RowDescriptionField> = stmt_params_finder
+        let parameters: Vec<PgTypeId> = stmt_params_finder
             .prepare(&mut query)
             .into_iter()
-            .map(|p| p.into())
+            .map(|p| PgTypeId::UNSPECIFIED)
             .collect();
 
         self.statements
-            .insert(parse.name, PreparedStatement { query, parameters });
+            .insert(parse.name, PreparedStatement {
+                query,
+                parameters: protocol::ParameterDescription::new(parameters),
+                description: protocol::RowDescription::new(vec![]),
+            });
 
-        self.write(protocol::ParseComplete::new()).await?;
+        self.write(&protocol::ParseComplete::new()).await?;
 
         Ok(())
     }
@@ -356,7 +356,7 @@ impl AsyncPostgresShim {
             Err(e) => {
                 let error_message = e.to_string();
                 error!("Error during processing {}: {}", query, error_message);
-                self.write(protocol::ErrorResponse::new(
+                self.write(&protocol::ErrorResponse::new(
                     protocol::ErrorSeverity::Error,
                     protocol::ErrorCode::InternalError,
                     error_message,
@@ -364,7 +364,7 @@ impl AsyncPostgresShim {
                 .await?;
             }
             Ok(QueryResponse::Ok(_)) => {
-                self.write(protocol::CommandComplete::new(
+                self.write(&protocol::CommandComplete::new(
                     protocol::CommandCompleteTag::Select,
                     0,
                 ))
@@ -380,7 +380,7 @@ impl AsyncPostgresShim {
                 }
 
                 self.write(
-                    protocol::RowDescription::new(fields)
+                    &protocol::RowDescription::new(fields)
                 ).await?;
 
                 for row in frame.get_rows().iter() {
@@ -399,10 +399,10 @@ impl AsyncPostgresShim {
                         values.push(value);
                     }
 
-                    self.write(protocol::DataRow::new(values)).await?;
+                    self.write(&protocol::DataRow::new(values)).await?;
                 }
 
-                self.write(protocol::CommandComplete::new(
+                self.write(&protocol::CommandComplete::new(
                     protocol::CommandCompleteTag::Select,
                     0,
                 ))
@@ -410,7 +410,7 @@ impl AsyncPostgresShim {
             }
         }
 
-        self.write(protocol::ReadyForQuery::new(
+        self.write(&protocol::ReadyForQuery::new(
             protocol::TransactionStatus::Idle,
         ))
         .await?;
