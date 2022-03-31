@@ -35,6 +35,12 @@ pub async fn read_message<Reader: AsyncReadExt + Unpin + Send>(
         }
     };
 
+    trace!(
+        "[pg] Decoded {:X?}",
+        message,
+    );
+
+
     Ok(message)
 }
 
@@ -52,7 +58,7 @@ pub async fn read_contents<Reader: AsyncReadExt + Unpin>(
     }
 
     trace!(
-        "[pg-wire] Receive package {:X?} with length {}",
+        "[pg] Receive package {:X?} with length {}",
         message_tag,
         length
     );

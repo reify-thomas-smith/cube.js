@@ -6,6 +6,7 @@ use std::{
 };
 
 use async_trait::async_trait;
+use datafusion::arrow::alloc::NativeType;
 use tokio::io::AsyncReadExt;
 
 use super::{buffer, PgType};
@@ -213,6 +214,27 @@ impl Serialize for CommandComplete {
     }
 }
 
+pub struct ParameterDescription {
+}
+
+impl ParameterDescription {
+    pub fn new() -> Self {
+        Self { }
+    }
+}
+
+impl Serialize for ParameterDescription {
+    const CODE: u8 = b't';
+
+    fn serialize(&self) -> Option<Vec<u8>> {
+        let mut buffer: Vec<u8> = vec![];
+        // The number of parameters used by the statement (can be zero).
+        buffer.extend_from_slice(&0_i16.to_le_bytes());
+
+        Some(buffer)
+    }
+}
+
 pub struct RowDescription {
     fields: Vec<RowDescriptionField>,
 }
@@ -231,6 +253,7 @@ impl Serialize for RowDescription {
         let size = u16::try_from(self.fields.len()).unwrap();
         let mut buffer = Vec::with_capacity(DEFAULT_CAPACITY);
         buffer.extend_from_slice(&size.to_be_bytes());
+
         for field in self.fields.iter() {
             buffer::write_string(&mut buffer, &field.name);
             buffer.extend_from_slice(&field.table_oid.to_be_bytes());
@@ -238,12 +261,14 @@ impl Serialize for RowDescription {
             buffer.extend_from_slice(&field.data_type_oid.to_be_bytes());
             buffer.extend_from_slice(&field.data_type_size.to_be_bytes());
             buffer.extend_from_slice(&field.type_modifier.to_be_bytes());
-            buffer.extend_from_slice(&field.format_code.to_be_bytes());
+            buffer.extend_from_slice(&0_i16.to_be_bytes());
         }
+    
         Some(buffer)
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct RowDescriptionField {
     name: String,
     // TODO: REWORK!
@@ -252,7 +277,6 @@ pub struct RowDescriptionField {
     data_type_oid: i32,
     data_type_size: i16,
     type_modifier: i32,
-    format_code: i16,
 }
 
 impl RowDescriptionField {
@@ -264,7 +288,6 @@ impl RowDescriptionField {
             data_type_oid: typ.oid as i32,
             data_type_size: typ.typlen,
             type_modifier: -1,
-            format_code: 0,
         }
     }
 }

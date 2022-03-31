@@ -1,10 +1,13 @@
 use sqlparser::ast;
 
-use crate::sql::statement::{BindValue, StatementParamsBinder};
+use crate::sql::statement::{BindValue, StatementParamsBinder, FoundParameter};
+use super::protocol::RowDescriptionField;
 
 #[derive(Debug)]
 pub struct PreparedStatement {
     pub query: ast::Statement,
+    pub parameters: Vec<FoundParameter>,
+    pub description: Vec<RowDescriptionField>,
 }
 
 impl PreparedStatement {

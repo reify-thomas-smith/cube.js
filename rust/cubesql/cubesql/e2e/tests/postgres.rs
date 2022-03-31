@@ -38,8 +38,8 @@ impl PostgresIntegrationTestSuite {
             );
         };
 
-        // let random_port = 5432_u16;
         let random_port = pick_unused_port().expect("No ports free");
+        let random_port = 5555_u16;
 
         tokio::spawn(async move {
             println!("[PostgresIntegrationTestSuite] Running SQL API");

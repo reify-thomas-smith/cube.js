@@ -2,7 +2,7 @@ use msql_srv::{Column, ColumnFlags, ColumnType};
 use sqlparser::ast;
 
 use super::{
-    postgres::protocol::{RowDescription, RowDescriptionField},
+    postgres::protocol::{RowDescription, RowDescriptionField, ParameterDescription},
     PgType, PgTypeId,
 };
 
@@ -131,12 +131,9 @@ impl Into<Column> for FoundParameter {
     }
 }
 
-impl Into<RowDescriptionField> for FoundParameter {
-    fn into(self) -> RowDescriptionField {
-        RowDescriptionField::new(
-            "unknown".to_string(),
-            PgType::get_by_tid(PgTypeId::UNSPECIFIED),
-        )
+impl Into<ParameterDescription> for Vec<FoundParameter> {
+    fn into(self) -> ParameterDescription {
+        ParameterDescription {}
     }
 }
 

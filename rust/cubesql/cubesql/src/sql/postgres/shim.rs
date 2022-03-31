@@ -16,14 +16,14 @@ use crate::{
     sql::{
         dataframe::{batch_to_dataframe, TableValue},
         session::DatabaseProtocol,
-        AuthContext, PgType, PgTypeId, QueryResponse, Session,
+        AuthContext, PgType, PgTypeId, QueryResponse, Session, statement::StatementParamsFinder,
     },
     CubeError,
 };
 
 use super::{
     buffer,
-    protocol::{self, FrontendMessage, SSL_REQUEST_PROTOCOL},
+    protocol::{self, FrontendMessage, SSL_REQUEST_PROTOCOL, RowDescriptionField, Format},
     statement::PreparedStatement,
 };
 
@@ -251,6 +251,36 @@ impl AsyncPostgresShim {
     }
 
     pub async fn describe(&mut self, describe: protocol::Describe) -> Result<(), Error> {
+        let parameters = match describe.typ {
+            protocol::DescribeType::Statement => {
+                let stmt = self.statements
+                    .get(&describe.name);
+
+                if let Some(s) = stmt {
+                    s.parameters
+                } else {
+                    self.write(protocol::ErrorResponse::new(
+                        protocol::ErrorSeverity::Error,
+                        protocol::ErrorCode::InternalError,
+                        "missing statement".to_string(),
+                    ))
+                    .await?;
+
+                    return Ok(())
+                }
+            },
+            protocol::DescribeType::Portal => {
+                unimplemented!("Unable to describe portal");
+            },
+        };
+
+        self.write(protocol::ParameterDescription::new()).await?;
+        self.write(
+            protocol::RowDescription::new(
+                parameters,
+            )
+        ).await?;
+
         Ok(())
     }
 
@@ -302,10 +332,17 @@ impl AsyncPostgresShim {
     }
 
     pub async fn parse(&mut self, parse: protocol::Parse) -> Result<(), Error> {
-        let query = parse_sql_to_statement(&parse.query, DatabaseProtocol::PostgreSQL).unwrap();
+        let mut     query = parse_sql_to_statement(&parse.query, DatabaseProtocol::PostgreSQL).unwrap();
+
+        let stmt_params_finder = StatementParamsFinder::new();
+        let parameters: Vec<RowDescriptionField> = stmt_params_finder
+            .prepare(&mut query)
+            .into_iter()
+            .map(|p| p.into())
+            .collect();
 
         self.statements
-            .insert(parse.name, PreparedStatement { query });
+            .insert(parse.name, PreparedStatement { query, parameters });
 
         self.write(protocol::ParseComplete::new()).await?;
 
@@ -342,7 +379,9 @@ impl AsyncPostgresShim {
                     ))
                 }
 
-                self.write(protocol::RowDescription::new(fields)).await?;
+                self.write(
+                    protocol::RowDescription::new(fields)
+                ).await?;
 
                 for row in frame.get_rows().iter() {
                     let mut values = Vec::new();
