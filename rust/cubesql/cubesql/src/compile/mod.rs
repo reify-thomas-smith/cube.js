@@ -5135,6 +5135,24 @@ mod tests {
         Ok(())
     }
 
+    #[tokio::test]
+    async fn test_rust_client() -> Result<(), CubeError> {
+        insta::assert_snapshot!(
+            "rust_client_types",
+            execute_query(
+                r#"SELECT t.typname, t.typtype, t.typelem, r.rngsubtype, t.typbasetype, n.nspname, t.typrelid
+                FROM pg_catalog.pg_type t
+                LEFT OUTER JOIN pg_catalog.pg_range r ON r.rngtypid = t.oid
+                INNER JOIN pg_catalog.pg_namespace n ON t.typnamespace = n.oid
+                WHERE t.oid = 25"#.to_string(),
+                DatabaseProtocol::PostgreSQL
+            )
+            .await?
+        );
+
+        Ok(())
+    }
+
     /* TODO: @ovr
     #[tokio::test]
     async fn test_current_schemas_postgres() -> Result<(), CubeError> {
