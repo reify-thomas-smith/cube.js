@@ -7,6 +7,7 @@ use mysql_async::{prelude::*, Conn, Opts, Pool, QueryResult, TextProtocol};
 
 use portpicker::pick_unused_port;
 use pretty_assertions::assert_eq;
+use serde_json::to_string;
 
 use super::basic::{AsyncTestConstructorResult, AsyncTestSuite, RunResult};
 
@@ -175,10 +176,29 @@ impl MySqlIntegrationTestSuite {
     }
 
     fn escape_snapshot_name(&self, name: String) -> String {
-        name.to_lowercase()
+        let mut name = name
+            .to_lowercase()
             // @todo Real escape?
+            .replace("\r", "")
+            .replace("\n", "")
+            .replace("\t", "")
+            .replace(">", "")
+            .replace("<", "")
+            .replace("'", "")
+            .replace(":", "")
             .replace(" ", "_")
-            .replace("*", "asterisk")
+            .replace("*", "asterisk");
+
+        for _ in 0..10 {
+            name = name.replace("__", "_");
+        }
+
+        // Windows limit
+        if name.len() > 250 {
+            name.chars().into_iter().take(250).collect()
+        } else {
+            name
+        }
     }
 
     async fn assert_query(&self, conn: &mut Conn, query: String) {
@@ -225,6 +245,16 @@ impl AsyncTestSuite for MySqlIntegrationTestSuite {
         .await?;
         self.test_execute_query(
             "SELECT COUNT(*) count, status, DATE_TRUNC('quarter', createdAt) date FROM Orders GROUP BY status, DATE_TRUNC('quarter', createdAt) ORDER BY date".to_string(),
+        )
+        .await?;
+        self.test_execute_query(
+            r#"SELECT
+                CAST(true as boolean) as bool_true,
+                CAST(false as boolean) as bool_false,
+                1::int as int,
+                'str' as str
+            "#
+            .to_string(),
         )
         .await?;
 
